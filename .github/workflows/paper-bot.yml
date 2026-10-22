@@ -1,0 +1,51 @@
+name: Paper trading bot
+
+# Watches NQ every minute during the session and posts paper entries/exits to
+# Discord. GitHub jobs are capped at a few hours, so the day is split into a
+# morning run (8:55am-12:35pm ET) and an afternoon run (12:25pm-4:10pm ET).
+# Each cron is listed for both EDT and EST; the script exits if it starts
+# outside its window. Trades are logged to paper/trades.csv.
+on:
+  schedule:
+    - cron: "55 12 * * 1-5"   # 8:55 EDT (7:55 EST -> exits, 13:55 covers it)
+    - cron: "55 13 * * 1-5"   # 8:55 EST
+    - cron: "25 16 * * 1-5"   # 12:25 EDT
+    - cron: "25 17 * * 1-5"   # 12:25 EST
+  workflow_dispatch:
+    inputs:
+      once:
+        description: "Run a single pass and exit (test)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "yfinance>=0.2.40" pandas numpy requests
+      - name: Run bot
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          git config user.name "paper-bot"
+          git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.once }}" = "true" ]; then
+            python paper/bot.py --once
+          else
+            H=$(TZ=America/New_York date +%H%M)
+            if [ "$H" -lt 830 ]; then echo "Too early ($H ET)"; exit 0; fi
+            if [ "$H" -lt 1215 ]; then python paper/bot.py --until 1235
+            else python paper/bot.py --until 1610; fi
+          fi
