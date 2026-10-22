@@ -10,6 +10,9 @@ Strategies (same rules as the backtests):
   KZ   Killzone first candle: the 9:30 and 13:30 ET 5m candles. If the body is
        >= 80% of the range and the range >= 0.5 ATR(14), go with it at the next
        bar's open. Stop 1 tick beyond the candle's other end. Target 1.5R.
+  KZ 8:30 (EXPERIMENTAL) same first-candle rule on the 8:30 ET 5m candle
+       (US data release). Strong in 2024-26 backtests, flat on 2020-26 15m data,
+       so it is labeled experimental. Target 1.5R, flat by 9:25 ET.
   ORB  15-min opening range breakout with daily bias: range = 9:30-9:45. First
        5m close outside it before 11:30 ET, only if it agrees with the daily bias
        (prior day close vs 21-day EMA). Stop 1 tick beyond the opposite side.
@@ -85,10 +88,10 @@ def hm(ts):
 def signals(df, bias, today):
     """Signals from CLOSED bars of today's session. Returns list of dicts."""
     A = atr14(df)
-    day = df[[ts.date() == today and 930 <= hm(ts) < 1600 for ts in df.index]]
+    day = df[[ts.date() == today and 830 <= hm(ts) < 1600 for ts in df.index]]
     out = []
-    # Killzone first candle
-    for t in (930, 1330):
+    # Killzone first candle (8:30 is experimental)
+    for t in (830, 930, 1330):
         rows = day[[hm(ts) == t for ts in day.index]]
         if len(rows) == 0:
             continue
@@ -98,9 +101,11 @@ def signals(df, bias, today):
         if rng > 0 and rng >= 0.5 * A.loc[ts] and abs(b.close - b.open) >= 0.8 * rng:
             d = 1 if b.close > b.open else -1
             stop = (b.low if d == 1 else b.high) - d * TICK
-            out.append(dict(strat=f"KZ {t // 100}:{t % 100:02d}", sig_ts=ts, d=d, stop=stop, r=1.5))
+            name = f"KZ {t // 100}:{t % 100:02d}" + (" (experimental)" if t == 830 else "")
+            out.append(dict(strat=name, sig_ts=ts, d=d, stop=stop, r=1.5, flat=925 if t == 830 else 1555))
     # 15-min ORB with daily bias, stop opposite side
     rng_bars = day[[930 <= hm(ts) < 945 for ts in day.index]]
+    day = day[[hm(ts) >= 930 for ts in day.index]]
     if len(rng_bars) == 3 and bias != 0:
         hi, lo = rng_bars.high.max(), rng_bars.low.min()
         for ts, b in day[[945 <= hm(ts) < 1130 for ts in day.index]].iterrows():
@@ -109,7 +114,7 @@ def signals(df, bias, today):
                 continue
             if d == bias:
                 stop = (lo if d == 1 else hi) - d * TICK
-                out.append(dict(strat="ORB 15m", sig_ts=ts, d=d, stop=stop, r=2.0))
+                out.append(dict(strat="ORB 15m", sig_ts=ts, d=d, stop=stop, r=2.0, flat=1555))
             break
     return out
 
@@ -129,9 +134,10 @@ def play(df, s):
     tgt = entry + d * s["r"] * risk
     res = dict(s, status="open", entry_ts=e_ts, entry=entry, risk=risk, target=tgt)
     for k, (ts, b) in enumerate(after.iterrows()):
-        if hm(ts) >= 1555:
+        fl = s.get("flat", 1555)
+        if hm(ts) >= fl:
             x = b.open - d * TICK
-            return dict(res, status="closed", exit_ts=ts, exit=x, how="time exit 15:55")
+            return dict(res, status="closed", exit_ts=ts, exit=x, how=f"time exit {fl // 100}:{fl % 100:02d}")
         if (d == 1 and b.low <= s["stop"]) or (d == -1 and b.high >= s["stop"]):
             f = s["stop"] if k == 0 else (min(b.open, s["stop"]) if d == 1 else max(b.open, s["stop"]))
             return dict(res, status="closed", exit_ts=ts, exit=f - d * TICK, how="stopped out")
