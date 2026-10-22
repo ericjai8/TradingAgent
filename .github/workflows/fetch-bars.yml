@@ -1,0 +1,38 @@
+name: Fetch futures bars
+
+on:
+  schedule:
+    # 22:15 UTC Mon-Fri = 6:15pm ET (EDT), after the 5pm ET futures break
+    - cron: "15 22 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install "yfinance>=0.2.40" pandas
+
+      - name: Download bars
+        run: python fetch_bars.py
+
+      - name: Commit new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No new bars"
+          else
+            git commit -m "Bars through $(date -u +%Y-%m-%d)"
+            git push
+          fi
