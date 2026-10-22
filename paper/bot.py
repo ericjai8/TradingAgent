@@ -41,6 +41,11 @@ TICK = 0.25
 PTV = 2.0          # MNQ $ per point per micro
 MICROS = 3
 FEES = 1.0         # $ per micro round trip
+# Per-account risk rules, chosen with the eval simulator for the safest pass:
+#   micros = floor(risk budget / (stop pts x $2 + $1 fees)), max 3, 0 -> skip
+#   done for the day after the first losing trade
+#   experimental setups are tracked but not sized into the accounts
+ACCOUNTS = {"25K": dict(budget=200, max_micros=3), "50K": dict(budget=400, max_micros=3)}
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, "state.json")
 LOG = os.path.join(HERE, "trades.csv")
@@ -166,6 +171,11 @@ def money(pts):
     return pts * PTV * MICROS - FEES * MICROS
 
 
+def size(acct, stop_pts):
+    a = ACCOUNTS[acct]
+    return int(min(a["max_micros"], a["budget"] // (stop_pts * PTV + FEES)))
+
+
 def fmt(x):
     return f"{x:,.2f}"
 
@@ -202,31 +212,51 @@ def step(today, bias, st):
     now_et = datetime.now(ET)
     closed = df[[ts + timedelta(minutes=5) <= now_et for ts in df.index]]
     last_bar = closed.index[-1] if len(closed) else None
+    trades = [play(closed, s) for s in signals(closed, bias, today)]
+    trades = [t for t in trades if t["status"] in ("open", "closed")]
+    trades.sort(key=lambda t: t["entry_ts"])
+    done_at = {a: None for a in ACCOUNTS}          # time of the first losing exit per account
     rows = []
-    for s in signals(closed, bias, today):
-        t = play(closed, s)
-        key_in = f"{t['strat']}|{s['sig_ts']}|in"
-        key_out = f"{t['strat']}|{s['sig_ts']}|out"
+    for t in trades:
         side = "LONG" if t["d"] == 1 else "SHORT"
-        if t["status"] in ("open", "closed") and key_in not in st["posted"]:
-            stop_pts = t["risk"]
-            post(f"PAPER ENTRY | {t['strat']} | {side} {MICROS} MNQ @ {fmt(t['entry'])} "
-                 f"({t['entry_ts']:%H:%M} ET bar) | stop {fmt(t['stop'])} ({stop_pts:.1f} pts, ${stop_pts * PTV * MICROS:,.0f}) "
-                 f"| target {fmt(t['target'])} ({t['r']:g}R) | data delayed")
+        pts = (t["exit"] - t["entry"]) * t["d"] if t["status"] == "closed" else None
+        acct = {}
+        for a in ACCOUNTS:
+            if "experimental" in t["strat"]:
+                acct[a] = (0, "not traded (experimental)")
+            elif done_at[a] is not None and t["entry_ts"] >= done_at[a]:
+                acct[a] = (0, "skip, done for the day after a loss")
+            else:
+                n = size(a, t["risk"])
+                acct[a] = (n, "skip, stop too wide for the risk budget" if n == 0 else "")
+                if n > 0 and pts is not None and pts * PTV * n - FEES * n < 0:
+                    done_at[a] = t["exit_ts"] if done_at[a] is None else min(done_at[a], t["exit_ts"])
+        key_in = f"{t['strat']}|{t['sig_ts']}|in"
+        key_out = f"{t['strat']}|{t['sig_ts']}|out"
+        if key_in not in st["posted"]:
+            parts = []
+            for a, (n, why) in acct.items():
+                parts.append(f"{a}: {n} micro{'s' if n != 1 else ''}, ${t['risk'] * PTV * n + FEES * n:,.0f} risk" if n else f"{a}: {why}")
+            post(f"PAPER ENTRY | {t['strat']} | {side} MNQ @ {fmt(t['entry'])} ({t['entry_ts']:%H:%M} ET bar) "
+                 f"| stop {fmt(t['stop'])} ({t['risk']:.1f} pts) | target {fmt(t['target'])} ({t['r']:g}R) "
+                 f"| {' | '.join(parts)} | data delayed")
             st["posted"].append(key_in)
         if t["status"] == "closed" and key_out not in st["posted"]:
-            pts = (t["exit"] - t["entry"]) * t["d"]
-            R = pts / t["risk"]
+            parts = []
+            for a, (n, why) in acct.items():
+                parts.append(f"{a}: ${pts * PTV * n - FEES * n:+,.0f}" if n else f"{a}: no position")
             post(f"PAPER EXIT | {t['strat']} | {side} | {t['how']} @ {fmt(t['exit'])} ({t['exit_ts']:%H:%M} ET bar) "
-                 f"| {R:+.2f}R | ${money(pts):+,.0f} at {MICROS} micros")
+                 f"| {pts / t['risk']:+.2f}R | {' | '.join(parts)}")
             st["posted"].append(key_out)
-        if t["status"] in ("open", "closed"):
-            rows.append(dict(date=str(today), strategy=t["strat"], side=side, entry_time=str(t["entry_ts"]),
-                             entry=t["entry"], stop=t["stop"], target=t["target"], stop_pts=round(t["risk"], 2),
-                             exit_time=str(t.get("exit_ts", "")), exit=t.get("exit", ""),
-                             result=t.get("how", "open"),
-                             R=round((t["exit"] - t["entry"]) * t["d"] / t["risk"], 3) if t["status"] == "closed" else "",
-                             usd_3_micros=round(money((t["exit"] - t["entry"]) * t["d"]), 2) if t["status"] == "closed" else ""))
+        row = dict(date=str(today), strategy=t["strat"], side=side, entry_time=str(t["entry_ts"]),
+                   entry=t["entry"], stop=t["stop"], target=t["target"], stop_pts=round(t["risk"], 2),
+                   exit_time=str(t.get("exit_ts", "")), exit=t.get("exit", ""), result=t.get("how", "open"),
+                   R=round(pts / t["risk"], 3) if pts is not None else "",
+                   usd_3_micros=round(money(pts), 2) if pts is not None else "")
+        for a, (n, why) in acct.items():
+            row[f"micros_{a}"] = n
+            row[f"usd_{a}"] = round(pts * PTV * n - FEES * n, 2) if (pts is not None and n) else (0 if pts is not None else "")
+        rows.append(row)
     st["last_bar"] = str(last_bar)
     return st, rows
 
@@ -250,7 +280,8 @@ def main():
     st = load_state(today)
     if not st["greeted"] and not a.once:
         post(f"Paper bot online for {today:%a %b %d}. Daily bias: {'long only' if bias == 1 else 'short only' if bias == -1 else 'none'} "
-             f"(ORB 15m only trades with it). Watching NQ 5m bars, {MICROS} MNQ micros. Data is delayed about 10 minutes.")
+             f"(ORB 15m only trades with it). Accounts: 25K risks ~$200/trade, 50K ~$400/trade, max 3 micros, "
+             f"done for the day after a loss. Data is delayed about 10 minutes.")
         st["greeted"] = True
     while True:
         try:
@@ -267,10 +298,10 @@ def main():
             log = pd.read_csv(LOG)
             t = log[(log.date == str(today)) & (log.R.astype(str) != "")]
             if len(t):
-                total = pd.to_numeric(t.usd_3_micros).sum()
-                post(f"Paper day summary {today:%a %b %d}: {len(t)} trade(s), "
-                     f"{pd.to_numeric(t.R).sum():+.2f}R total, ${total:+,.0f} at {MICROS} micros. "
-                     f"All-time paper log: {len(log)} trades, {pd.to_numeric(log.R, errors='coerce').sum():+.2f}R.")
+                per = " | ".join(f"{a}: ${pd.to_numeric(t.get(f'usd_{a}', 0), errors='coerce').fillna(0).sum():+,.0f}"
+                                 for a in ACCOUNTS)
+                post(f"Paper day summary {today:%a %b %d}: {len(t)} signal(s), {pd.to_numeric(t.R).sum():+.2f}R | {per}. "
+                     f"All-time paper log: {len(log)} signals, {pd.to_numeric(log.R, errors='coerce').sum():+.2f}R.")
             else:
                 post(f"Paper day summary {today:%a %b %d}: no trades today.")
         except Exception as e:
