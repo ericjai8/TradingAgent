@@ -9,7 +9,8 @@ Nothing here places real orders.
 Strategies (same rules as the backtests):
   KZ   Killzone first candle: the 9:30 and 13:30 ET 5m candles. If the body is
        >= 80% of the range and the range >= 0.5 ATR(14), go with it at the next
-       bar's open. Stop 1 tick beyond the candle's other end. Target 1.5R.
+       bar's open. Stop 75% of the candle's range back from its close (+1 tick).
+       Target 2R.
   KZ 8:30 (EXPERIMENTAL) same first-candle rule on the 8:30 ET 5m candle
        (US data release). Strong in 2024-26 backtests, flat on 2020-26 15m data,
        so it is labeled experimental. Target 1.5R, flat by 9:25 ET.
@@ -105,9 +106,13 @@ def signals(df, bias, today):
         rng = b.high - b.low
         if rng > 0 and rng >= 0.5 * A.loc[ts] and abs(b.close - b.open) >= 0.8 * rng:
             d = 1 if b.close > b.open else -1
-            stop = (b.low if d == 1 else b.high) - d * TICK
             name = f"KZ {t // 100}:{t % 100:02d}" + (" (experimental)" if t == 830 else "")
-            out.append(dict(strat=name, sig_ts=ts, d=d, stop=stop, r=1.5, flat=925 if t == 830 else 1555))
+            if t == 830:   # tested as: stop at the candle's far end, 1.5R, flat 9:25
+                stop = (b.low if d == 1 else b.high) - d * TICK
+                out.append(dict(strat=name, sig_ts=ts, d=d, stop=stop, r=1.5, flat=925))
+            else:          # stop 75% of the candle back from its close, 2R
+                stop = b.close - d * 0.75 * rng - d * TICK
+                out.append(dict(strat=name, sig_ts=ts, d=d, stop=stop, r=2.0, flat=1555))
     # 15-min ORB with daily bias, stop opposite side
     rng_bars = day[[930 <= hm(ts) < 945 for ts in day.index]]
     day = day[[hm(ts) >= 930 for ts in day.index]]
