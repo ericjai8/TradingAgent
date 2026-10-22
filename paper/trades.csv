@@ -1,0 +1,2 @@
+date,strategy,side,entry_time,entry,stop,target,stop_pts,exit_time,exit,result,R,usd_3_micros
+2026-10-22,ORB 15m,SHORT,2026-10-22 10:15:00-04:00,29458.25,29560.25,29254.25,102.0,2026-10-22 10:45:00-04:00,29254.25,target hit,2.0,1221.0
