@@ -1,0 +1,28 @@
+name: Post to Discord
+
+# Posts a message to the Discord channel stored in the DISCORD_WEBHOOK secret.
+# Run it from the Actions tab, or trigger it with a workflow_dispatch call.
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Message to post"
+        required: true
+        default: "Test from TradingAgent: Discord posting works."
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post message
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MESSAGE: ${{ inputs.message }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "The DISCORD_WEBHOOK secret is not set."; exit 1
+          fi
+          body=$(python3 -c 'import json,os; print(json.dumps({"content": os.environ["MESSAGE"][:1900]}))')
+          code=$(curl -s -o resp.txt -w "%{http_code}" -H "Content-Type: application/json" -d "$body" "$WEBHOOK")
+          echo "Discord responded $code"; cat resp.txt
+          [ "$code" = "204" ] || [ "$code" = "200" ]
