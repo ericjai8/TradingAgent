@@ -1,0 +1,315 @@
+<title>Sweep &amp; Reclaim Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: trading-desk replay tool. Controls bar on top, chart + day story side by side, trade log below. */
+:root{
+  --bg:#f3f5f7; --panel:#ffffff; --fg:#18222c; --muted:#62707d; --faint:#e3e8ec; --line:#d3dae0;
+  --accent:#2457a6; --up:#23855a; --dn:#c23b3b; --sweep:#b7791f; --win:#e9eef6;
+  --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f151b; --panel:#161e26; --fg:#e3e9ee; --muted:#93a0ac; --faint:#232e38; --line:#2c3843;
+  --accent:#78a7ee; --up:#4cc38a; --dn:#f07272; --sweep:#e0aa4f; --win:#1b2633; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f151b; --panel:#161e26; --fg:#e3e9ee; --muted:#93a0ac; --faint:#232e38; --line:#2c3843;
+  --accent:#78a7ee; --up:#4cc38a; --dn:#f07272; --sweep:#e0aa4f; --win:#1b2633; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans)}
+.wrap{max-width:1180px;margin:0 auto;padding-block:24px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px}
+h1{font:600 22px/1.2 var(--sans);margin:0}
+.sub{color:var(--muted);font-size:13px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.bar .grp{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sep{width:1px;height:24px;background:var(--line)}
+button,select,input[type=date]{font:500 13px var(--sans);color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+button[aria-pressed="true"]{background:var(--accent);color:var(--panel);border-color:var(--accent)}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px}
+@media (max-width:900px){.main{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}
+.chartbox{position:relative;padding:12px}
+.daytitle{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;margin:0 4px 8px}
+.daytitle strong{font:600 17px var(--sans)}
+canvas{display:block;width:100%;touch-action:pan-y}
+#tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:12px/1.4 var(--mono);color:var(--fg);box-shadow:0 2px 8px rgba(0,0,0,.12);white-space:nowrap}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;font:500 12px/1.6 var(--mono);border:1px solid var(--line);color:var(--muted)}
+.chip.long{color:var(--up);border-color:var(--up)}.chip.short{color:var(--dn);border-color:var(--dn)}
+.side{padding:14px 16px;display:grid;gap:12px;align-content:start}
+.side h2{font:600 13px var(--sans);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0}
+.lvls{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font:13px var(--mono)}
+.lvls span:nth-child(odd){color:var(--muted)}
+.story{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.story li{border-left:3px solid var(--line);padding:2px 0 2px 10px;font-size:14px}
+.story li.traded{border-color:var(--accent)}
+.story li .t{font:12px var(--mono);color:var(--muted)}
+.story li .res{font-weight:600}
+.pos{color:var(--up)}.neg{color:var(--dn)}
+.empty{color:var(--muted);font-size:14px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:8px 4px 0}
+.legend i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
+.log{padding:14px 16px;display:grid;gap:10px}
+.logbar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between}
+.stats{display:flex;flex-wrap:wrap;gap:6px 18px;font:13px var(--mono);color:var(--muted)}
+.stats b{color:var(--fg);font-weight:500}
+.tbl{overflow:auto;max-height:340px;border:1px solid var(--line);border-radius:6px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--faint);text-align:right;white-space:nowrap}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left}
+th{position:sticky;top:0;background:var(--panel);font:500 11px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+td{font-family:var(--mono);font-variant-numeric:tabular-nums}
+tbody tr{cursor:pointer}tbody tr:hover{background:var(--win)}
+tbody tr.cur{background:var(--win)}
+.note{font-size:12px;color:var(--muted)}
+kbd{font:11px var(--mono);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Sweep &amp; Reclaim Replay</h1>
+    <span class="sub">MNQ 15m · every session Jun 2020 – today, updated daily · same rules as the v1 indicator</span>
+  </header>
+
+  <div class="bar" role="toolbar" aria-label="Day navigation">
+    <div class="grp">
+      <button id="prev" title="Previous day (←)">◀ Day</button>
+      <input type="date" id="date" aria-label="Session date">
+      <button id="next" title="Next day (→)">Day ▶</button>
+    </div>
+    <div class="grp">
+      <label class="sub" for="filter">Step through</label>
+      <select id="filter">
+        <option value="all">All days</option>
+        <option value="sweep">Days with an in-bias sweep</option>
+        <option value="setup">Days a limit was placed</option>
+        <option value="trade" selected>Trade days only</option>
+      </select>
+    </div>
+    <span class="sep" aria-hidden="true"></span>
+    <div class="grp">
+      <button id="replay" aria-pressed="false" title="Hide the future and reveal bars one at a time">Bar replay</button>
+      <button id="back" title="Back one bar">◀</button>
+      <button id="step" title="Forward one bar (Space)">▶</button>
+      <button id="play">Play</button>
+      <button id="reveal">Show all</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="card chartbox">
+      <div class="daytitle"><strong id="dlabel"></strong><span id="dbias" class="chip"></span><span id="dclock" class="sub"></span></div>
+      <canvas id="cv" height="460" aria-label="15 minute candle chart for the selected session"></canvas>
+      <div id="tip" hidden></div>
+      <div class="legend">
+        <span><i style="border-color:var(--sweep);border-top-style:dotted"></i>levels</span>
+        <span><i style="border-color:var(--accent)"></i>limit entry</span>
+        <span><i style="border-color:var(--dn)"></i>stop</span>
+        <span><i style="border-color:var(--up);border-top-style:dashed"></i>target</span>
+        <span>shaded = 9:30–11:30 hunting window</span>
+      </div>
+    </div>
+    <aside class="card side">
+      <div><h2>Levels</h2><div class="lvls" id="lvls"></div></div>
+      <div><h2>What happened</h2><ul class="story" id="story"></ul></div>
+      <p class="note">Keys: <kbd>←</kbd> <kbd>→</kbd> change day, <kbd>Space</kbd> next bar in replay.</p>
+    </aside>
+  </div>
+
+  <section class="card log" aria-label="Trade log">
+    <div class="logbar">
+      <h2 style="font:600 15px var(--sans);margin:0">Trade log</h2>
+      <div class="grp"><label class="sub" for="year">Year</label>
+        <select id="year"></select></div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="tbl"><table>
+      <thead><tr><th>Date</th><th>Side</th><th>Level</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit</th><th>R</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+    <p class="note">R is after 1 tick slippage and $1 per micro in fees. Trades come from the Python backtest on 15m bars; the indicator on TradingView may differ slightly.</p>
+  </section>
+</div>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(function(){
+const DAYS = JSON.parse(document.getElementById('data').textContent);
+const byDate = new Map(DAYS.map((d,i)=>[d.d,i]));
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d'), tip = $('tip');
+let cur = 0, replay = false, cursor = 0, timer = null, layout = null;
+
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+function fmt(x){return x==null?'–':x.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function tAt(d,i){const [h,m]=d.t0.split(':').map(Number);const t=h*60+m+15*i;return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
+function stageOf(d){
+  if(d.ev.some(e=>e.stage==='traded'))return 'trade';
+  if(d.ev.some(e=>e.stage==='limit not filled'))return 'setup';
+  if(d.ev.some(e=>e.stage!=='against bias'))return 'sweep';
+  return 'all';
+}
+const RANK={all:0,sweep:1,setup:2,trade:3};
+function matches(d){const f=$('filter').value;return RANK[stageOf(d)]>=RANK[f];}
+
+function go(dir){
+  let i=cur+dir;
+  while(i>=0&&i<DAYS.length&&!matches(DAYS[i]))i+=dir;
+  if(i>=0&&i<DAYS.length)show(i);
+}
+function show(i){
+  cur=i;stop();
+  const d=DAYS[i];
+  cursor=replay?firstWindowBar(d):d.bars.length-1;
+  $('date').value=d.d;
+  render();
+  document.querySelectorAll('#rows tr').forEach(r=>r.classList.toggle('cur',r.dataset.d===d.d));
+}
+function firstWindowBar(d){for(let i=0;i<d.bars.length;i++){if(tAt(d,i)>='09:30')return Math.max(0,i-1);}return 0;}
+
+function storyFor(e,d,lim){
+  const L=e.level, t=k=>tAt(d,k);
+  const seen=k=>k!=null&&k<=lim;
+  if(!seen(e.sweep))return null;
+  const sideTxt=e.side===1?'long':'short';
+  let parts=[`<span class="t">${t(e.sweep)}</span> Swept <b>${L}</b> (${sideTxt} setup).`];
+  const done=s=>parts.push(s);
+  if(e.stage==='against bias'){done(' Against the daily bias, so ignored.');return parts.join('');}
+  if(e.rec!=null&&seen(e.rec))done(` Closed back inside at ${t(e.rec)}.`);
+  else if(e.stage==='no reclaim'){if(lim>=e.sweep+3)done(' Never closed back inside within 3 bars. No trade.');else done(' Waiting for a close back inside…');return parts.join('');}
+  else{done(' Waiting for a close back inside…');return parts.join('');}
+  if(e.stage==='no displacement'){if(lim>=e.rec+7)done(' No strong candle with an FVG within 6 bars. No trade.');else done(' Waiting for displacement…');return parts.join('');}
+  if(!seen(e.conf??e.disp+1)){done(' Waiting for displacement…');return parts.join('');}
+  if(e.stage==='target under 2R'){done(` Displacement left an FVG, but no level was 2R away from ${fmt(e.entry)}. Skipped.`);return parts.join('');}
+  done(` Displacement at ${t(e.disp)}. Limit ${e.side===1?'buy':'sell'} ${fmt(e.entry)}, stop ${fmt(e.stop)}, target ${fmt(e.target)} (${((e.target-e.entry)*e.side/Math.abs(e.entry-e.stop)).toFixed(1)}R).`);
+  if(e.stage==='limit not filled'){if(lim>=e.conf+12)done(' Price never came back to the limit, or gapped past it. No trade.');else done(' Waiting for a fill…');return parts.join('');}
+  if(!seen(e.fill)){done(' Waiting for a fill…');return parts.join('');}
+  done(` Filled at ${t(e.fill)}.`);
+  if(!seen(e.exit)){done(' In the trade…');return parts.join('');}
+  const how=Math.abs(e.exit_px-e.target)<0.01?'Target hit':e.R<-0.85?'Stopped out':'Flat at 15:55';
+  done(` ${how} at ${t(e.exit)}: <span class="res ${e.R>=0?'pos':'neg'}">${e.R>=0?'+':''}${e.R.toFixed(2)}R</span>`);
+  return parts.join('');
+}
+
+function render(){
+  const d=DAYS[cur];
+  const dt=new Date(d.d+'T12:00:00');
+  $('dlabel').textContent=dt.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  const b=$('dbias');b.textContent=d.b===1?'Bias: long only':d.b===-1?'Bias: short only':'Bias: none';
+  b.className='chip '+(d.b===1?'long':d.b===-1?'short':'');
+  $('dclock').textContent=replay?`Replay at ${tAt(d,cursor)} ET`:'';
+  $('lvls').innerHTML=['PDH','PDL','ONH','ONL','PWH','PWL'].map(k=>`<span>${k}</span><span>${fmt(d.L[k])}</span>`).join('');
+  const lim=replay?cursor:1e9;
+  const items=d.ev.map(e=>({e,txt:storyFor(e,d,lim)})).filter(x=>x.txt);
+  $('story').innerHTML=items.length?items.map(x=>`<li class="${x.e.stage==='traded'&&(!replay||x.e.exit<=lim)?'traded':''}">${x.txt}</li>`).join(''):
+    `<li class="empty" style="border:0;padding:0">${replay?'Nothing yet. Step forward.':'No level was swept in the window. A no-trade day.'}</li>`;
+  draw();
+}
+
+function draw(){
+  const d=DAYS[cur];
+  const W=cv.clientWidth, H=window.innerWidth<600?340:460;
+  const dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);
+  const C={fg:css('--fg'),muted:css('--muted'),faint:css('--faint'),up:css('--up'),dn:css('--dn'),acc:css('--accent'),sw:css('--sweep'),win:css('--win'),panel:css('--panel')};
+  ctx.clearRect(0,0,W,H);
+  const lim=replay?cursor:d.bars.length-1;
+  const vis=d.bars.slice(0,lim+1);
+  let lo=Math.min(...vis.map(b=>b[2])),hi=Math.max(...vis.map(b=>b[1]));
+  const span=Math.max(hi-lo,20);lo-=span*0.15;hi+=span*0.15;
+  const evs=d.ev.filter(e=>e.sweep!=null&&e.sweep<=lim);
+  evs.forEach(e=>{[e.entry,e.stop,e.target].forEach(v=>{if(v!=null&&e.conf!=null&&e.conf<=lim){lo=Math.min(lo,v-span*0.05);hi=Math.max(hi,v+span*0.05);}});});
+  const padL=8,padR=86,padT=10,padB=24, n=d.bars.length;
+  const xw=(W-padL-padR)/n, X=i=>padL+xw*(i+0.5), Y=p=>padT+(hi-p)/(hi-lo)*(H-padT-padB);
+  layout={X,Y,xw,padL,padR,lo,hi,n,H,W,lim};
+  // hunting window
+  let ws=-1,we=-1;for(let i=0;i<n;i++){const t=tAt(d,i);if(t>='09:30'&&ws<0)ws=i;if(t<'11:30')we=i;}
+  if(ws>=0){ctx.fillStyle=C.win;ctx.fillRect(X(ws)-xw/2,padT,(we-ws+1)*xw,H-padT-padB);}
+  // grid + y labels
+  ctx.font='11px "IBM Plex Mono", monospace';ctx.textBaseline='middle';
+  const step=niceStep((hi-lo)/6);
+  for(let p=Math.ceil(lo/step)*step;p<hi;p+=step){ctx.strokeStyle=C.faint;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(padL,Y(p));ctx.lineTo(W-padR,Y(p));ctx.stroke();ctx.fillStyle=C.muted;ctx.textAlign='left';ctx.fillText(p.toLocaleString('en-US'),W-padR+6,Y(p));}
+  // x labels
+  ctx.textAlign='center';ctx.textBaseline='alphabetic';
+  for(let i=0;i<n;i++){const t=tAt(d,i);if(t.endsWith(':00')&&(+t.slice(0,2))%2===0){ctx.fillStyle=C.muted;ctx.fillText(t,X(i),H-6);}}
+  // levels
+  ctx.textBaseline='middle';
+  Object.entries(d.L).forEach(([k,v])=>{
+    if(v==null)return;
+    ctx.fillStyle=C.sw;ctx.textAlign='left';
+    if(v<lo||v>hi){ctx.globalAlpha=.75;ctx.fillText(`${k} ${v>hi?'↑':'↓'} ${fmt(v)}`,padL+4,v>hi?padT+8:H-padB-8);ctx.globalAlpha=1;return;}
+    ctx.strokeStyle=C.sw;ctx.setLineDash([2,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(padL,Y(v));ctx.lineTo(W-padR,Y(v));ctx.stroke();ctx.setLineDash([]);
+    ctx.fillText(k,padL+4,Y(v)-8);
+  });
+  // candles
+  vis.forEach((b,i)=>{const up=b[3]>=b[0];ctx.strokeStyle=ctx.fillStyle=up?C.up:C.dn;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(X(i),Y(b[1]));ctx.lineTo(X(i),Y(b[2]));ctx.stroke();
+    const bw=Math.max(1,xw*0.62),y1=Y(Math.max(b[0],b[3])),y2=Y(Math.min(b[0],b[3]));ctx.fillRect(X(i)-bw/2,y1,bw,Math.max(1,y2-y1));});
+  // events
+  evs.forEach(e=>{
+    const sb=d.bars[e.sweep];const sy=e.side===1?sb[2]:sb[1];
+    if(e.stage==='against bias'){mark(X(e.sweep),Y(sy)+(e.side===1?12:-12),C.muted,'×');return;}
+    mark(X(e.sweep),Y(sy)+(e.side===1?12:-12),C.sw,'●');
+    if(e.disp!=null&&e.disp<=lim&&e.conf!=null&&e.conf<=lim){const b2=d.bars[e.disp];const bw=Math.max(3,xw*0.9);ctx.strokeStyle=C.fg;ctx.lineWidth=1.5;ctx.strokeRect(X(e.disp)-bw/2,Y(b2[1])-2,bw,Y(b2[2])-Y(b2[1])+4);}
+    if(e.conf!=null&&e.conf<=lim&&e.entry!=null&&e.target!=null){
+      const end=e.exit!=null&&e.exit<=lim?e.exit:(e.fill!=null&&e.fill<=lim?lim:Math.min(e.conf+12,lim));
+      hline(e.entry,X(e.conf),X(Math.max(end,e.conf+1)),C.acc,2,[]);
+      hline(e.stop,X(e.conf),X(Math.max(end,e.conf+1)),C.dn,1.5,[]);
+      hline(e.target,X(e.conf),X(Math.max(end,e.conf+1)),C.up,1.5,[5,4]);
+      tag(`${e.side===1?'BUY':'SELL'} ${fmt(e.entry)}`,X(e.conf),Y(e.entry)+(e.side===1?-10:10),C.acc);
+    }
+    if(e.fill!=null&&e.fill<=lim)mark(X(e.fill),Y(e.entry),C.acc,'◆');
+    if(e.exit!=null&&e.exit<=lim){mark(X(e.exit),Y(e.exit_px),e.R>=0?C.up:C.dn,'■');tag(`${e.R>=0?'+':''}${e.R.toFixed(2)}R`,X(e.exit),Y(e.exit_px)+(e.R>=0===(e.side===1)?-14:14),e.R>=0?C.up:C.dn);}
+  });
+  if(replay){ctx.strokeStyle=C.muted;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(X(lim)+xw/2,padT);ctx.lineTo(X(lim)+xw/2,H-padB);ctx.stroke();ctx.setLineDash([]);}
+  function mark(x,y,c,s){ctx.fillStyle=c;ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='12px "IBM Plex Sans", sans-serif';ctx.fillText(s,x,y);}
+  function hline(p,x1,x2,c,w,dash){ctx.strokeStyle=c;ctx.lineWidth=w;ctx.setLineDash(dash);ctx.beginPath();ctx.moveTo(x1,Y(p));ctx.lineTo(x2,Y(p));ctx.stroke();ctx.setLineDash([]);}
+  function tag(t,x,y,c){ctx.font='500 11px "IBM Plex Mono", monospace';const w=ctx.measureText(t).width+10;ctx.fillStyle=C.panel;ctx.globalAlpha=.9;ctx.fillRect(x-w/2,y-9,w,18);ctx.globalAlpha=1;ctx.strokeStyle=c;ctx.lineWidth=1;ctx.strokeRect(x-w/2,y-9,w,18);ctx.fillStyle=c;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
+}
+function niceStep(r){const p=Math.pow(10,Math.floor(Math.log10(r)));const m=r/p;return (m<1.5?1:m<3?2:m<7?5:10)*p;}
+
+cv.addEventListener('mousemove',ev=>{
+  if(!layout)return;const r=cv.getBoundingClientRect();const x=ev.clientX-r.left;
+  const i=Math.floor((x-layout.padL)/layout.xw);const d=DAYS[cur];
+  if(i<0||i>layout.lim||i>=d.bars.length){tip.hidden=true;return;}
+  const b=d.bars[i];tip.hidden=false;
+  tip.innerHTML=`${tAt(d,i)} ET<br>O ${fmt(b[0])}<br>H ${fmt(b[1])}<br>L ${fmt(b[2])}<br>C ${fmt(b[3])}`;
+  const tx=Math.min(layout.X(i)+16,r.width-130);tip.style.left=(tx+12)+'px';tip.style.top=(ev.clientY-r.top+20)+'px';
+});
+cv.addEventListener('mouseleave',()=>tip.hidden=true);
+
+function setReplay(on){replay=on;$('replay').setAttribute('aria-pressed',on);stop();const d=DAYS[cur];cursor=on?firstWindowBar(d):d.bars.length-1;render();}
+function stepBy(k){if(!replay)setReplay(true);const d=DAYS[cur];cursor=Math.max(0,Math.min(d.bars.length-1,cursor+k));render();if(cursor>=d.bars.length-1)stop();}
+function stop(){if(timer){clearInterval(timer);timer=null;$('play').textContent='Play';}}
+$('replay').onclick=()=>setReplay(!replay);
+$('step').onclick=()=>stepBy(1);$('back').onclick=()=>stepBy(-1);
+$('reveal').onclick=()=>setReplay(false);
+$('play').onclick=()=>{if(timer){stop();return;}if(!replay)setReplay(true);$('play').textContent='Pause';timer=setInterval(()=>stepBy(1),450);};
+$('prev').onclick=()=>go(-1);$('next').onclick=()=>go(1);
+$('filter').onchange=()=>{if(!matches(DAYS[cur]))go(1);};
+$('date').onchange=()=>{const v=$('date').value;let i=byDate.get(v);if(i==null){i=DAYS.findIndex(d=>d.d>=v);if(i<0)i=DAYS.length-1;}show(i);};
+document.addEventListener('keydown',e=>{if(['INPUT','SELECT'].includes(document.activeElement.tagName))return;
+  if(e.key==='ArrowLeft'){go(-1);e.preventDefault();}else if(e.key==='ArrowRight'){go(1);e.preventDefault();}
+  else if(e.key===' '){stepBy(1);e.preventDefault();}});
+window.addEventListener('resize',()=>draw());
+if(window.matchMedia)window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()=>draw());
+new MutationObserver(()=>draw()).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+
+// trade log
+const trades=[];DAYS.forEach((d,i)=>d.ev.forEach(e=>{if(e.stage==='traded')trades.push({i,d:d.d,e});}));
+const years=[...new Set(trades.map(t=>t.d.slice(0,4)))];
+$('year').innerHTML='<option value="all">All years</option>'+years.map(y=>`<option>${y}</option>`).join('');
+function fillLog(){
+  const y=$('year').value;const ts=trades.filter(t=>y==='all'||t.d.startsWith(y));
+  const R=ts.map(t=>t.e.R);const tot=R.reduce((a,b)=>a+b,0);const w=R.filter(r=>r>0).length;
+  $('stats').innerHTML=`<span>Trades <b>${ts.length}</b></span><span>Win rate <b>${ts.length?Math.round(100*w/ts.length):0}%</b></span><span>Avg <b class="${tot>=0?'pos':'neg'}">${ts.length?(tot/ts.length>=0?'+':'')+(tot/ts.length).toFixed(2):'–'}R</b></span><span>Total <b class="${tot>=0?'pos':'neg'}">${tot>=0?'+':''}${tot.toFixed(1)}R</b></span>`;
+  $('rows').innerHTML=ts.slice().reverse().map(t=>{const e=t.e;return `<tr data-d="${t.d}" data-i="${t.i}"><td>${t.d}</td><td>${e.side===1?'Long':'Short'}</td><td>${e.level}</td><td>${fmt(e.entry)}</td><td>${fmt(e.stop)}</td><td>${fmt(e.target)}</td><td>${fmt(e.exit_px)}</td><td class="${e.R>=0?'pos':'neg'}">${e.R>=0?'+':''}${e.R.toFixed(2)}</td></tr>`;}).join('');
+  document.querySelectorAll('#rows tr').forEach(r=>{r.onclick=()=>{show(+r.dataset.i);window.scrollTo({top:0,behavior:'smooth'});};r.classList.toggle('cur',r.dataset.d===DAYS[cur].d);});
+}
+$('year').onchange=fillLog;
+fillLog();
+show(trades.length?trades[trades.length-1].i:DAYS.length-1);
+})();
+</script>
