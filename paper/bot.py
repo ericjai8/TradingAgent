@@ -267,11 +267,15 @@ def step(today, bias, st):
     trades = [play(closed, s) for s in signals(closed, bias, today)]
     try:
         df1 = get_1m()
+        st["bars_1m"] = 0 if df1 is None else len(df1)
         if df1 is not None:
             closed1 = df1[[ts + timedelta(minutes=1) <= now_et for ts in df1.index]]
+            st["sessions_1m"] = len({ts.date() for ts in closed1.index if 930 <= ts.hour * 100 + ts.minute < 1600})
             trades += noise.day_trades(closed1, today)
+        st.pop("noise_error", None)
     except Exception as e:
         print("noise-area step failed:", repr(e), flush=True)
+        st["noise_error"] = repr(e)[:300]
     trades = [t for t in trades if t["status"] in ("open", "closed")]
     trades.sort(key=lambda t: t["entry_ts"])
     done_at = {a: None for a in ACCOUNTS}          # time of the first losing exit per account
