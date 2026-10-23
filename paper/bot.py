@@ -18,6 +18,10 @@ Strategies (same rules as the backtests):
        5m close outside it before 11:30 ET, only if it agrees with the daily bias
        (prior day close vs 21-day EMA). Stop 1 tick beyond the opposite side.
        Target 2R.
+  NOISE Noise-area momentum on 1m bars (paper/noise.py): every 30 min from 10:00
+       to 15:30, trade a close outside the day's normal range (14-day average
+       move at that minute); exit back inside the range/VWAP at a 30-min check,
+       hard stop = one normal move, max 2/day, flat 15:55.
   Fills: entry at next bar open + 1 tick, stop checked from the entry bar on,
   stop wins ties, target must trade 1 tick through, flat at 15:55 ET.
 
@@ -37,6 +41,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+import noise
+
 ET = ZoneInfo("America/New_York")
 TICK = 0.25
 PTV = 2.0          # MNQ $ per point per micro
@@ -46,7 +52,7 @@ FEES = 1.0         # $ per micro round trip
 #   micros = floor(risk budget / (stop pts x $2 + $1 fees)), max 3, 0 -> skip
 #   done for the day after the first losing trade
 #   experimental setups are tracked but not sized into the accounts
-ACCOUNTS = {"25K": dict(budget=200, max_micros=3), "50K": dict(budget=400, max_micros=3)}
+ACCOUNTS = {"25K": dict(budget=300, max_micros=3), "50K": dict(budget=500, max_micros=3)}
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, "state.json")
 LOG = os.path.join(HERE, "trades.csv")
@@ -65,6 +71,47 @@ def get_5m():
     idx = df.index.tz_convert(ET) if df.index.tz is not None else df.index.tz_localize("UTC").tz_convert(ET)
     df.index = idx
     return df
+
+
+HIST1 = None
+
+
+def _dl1(**kw):
+    x = yf.download("NQ=F", interval="1m", progress=False, auto_adjust=False,
+                    prepost=True, threads=False, **kw)
+    if x is None or x.empty:
+        return pd.DataFrame()
+    if isinstance(x.columns, pd.MultiIndex):
+        x.columns = x.columns.get_level_values(0)
+    x = x.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna()
+    x.index = x.index.tz_convert(ET) if x.index.tz is not None else x.index.tz_localize("UTC").tz_convert(ET)
+    return x
+
+
+def get_1m():
+    """Past ~4 weeks of 1m bars (fetched once, Yahoo allows 7 days per request)
+    plus today's bars (refreshed every call)."""
+    global HIST1
+    today = datetime.now(ET).date()
+    if HIST1 is None:
+        parts = []
+        for k in range(4):
+            e = today - timedelta(days=7 * k)
+            s_ = e - timedelta(days=7 if k < 3 else 6)
+            try:
+                parts.append(_dl1(start=s_.isoformat(), end=e.isoformat()))
+            except Exception as ex:
+                print("1m history chunk failed", ex)
+        HIST1 = pd.concat([p for p in parts if len(p)]) if any(len(p) for p in parts) else pd.DataFrame()
+        if len(HIST1):
+            HIST1 = HIST1[~HIST1.index.duplicated()].sort_index()
+            HIST1 = HIST1[[ts.date() < today for ts in HIST1.index]]
+        print(f"1m history: {len(HIST1)} bars")
+    cur = _dl1(period="1d")
+    if not len(HIST1) and not len(cur):
+        return None
+    df = pd.concat([HIST1, cur])
+    return df[~df.index.duplicated(keep="last")].sort_index()
 
 
 def daily_bias():
@@ -218,6 +265,13 @@ def step(today, bias, st):
     closed = df[[ts + timedelta(minutes=5) <= now_et for ts in df.index]]
     last_bar = closed.index[-1] if len(closed) else None
     trades = [play(closed, s) for s in signals(closed, bias, today)]
+    try:
+        df1 = get_1m()
+        if df1 is not None:
+            closed1 = df1[[ts + timedelta(minutes=1) <= now_et for ts in df1.index]]
+            trades += noise.day_trades(closed1, today)
+    except Exception as e:
+        print("noise-area step failed:", repr(e), flush=True)
     trades = [t for t in trades if t["status"] in ("open", "closed")]
     trades.sort(key=lambda t: t["entry_ts"])
     done_at = {a: None for a in ACCOUNTS}          # time of the first losing exit per account
@@ -243,8 +297,9 @@ def step(today, bias, st):
             for a, (n, why) in acct.items():
                 parts.append(f"{a}: {n} micro{'s' if n != 1 else ''}, ${t['risk'] * PTV * n + FEES * n:,.0f} risk" if n else f"{a}: {why}")
             post(f"PAPER ENTRY | {t['strat']} | {side} MNQ @ {fmt(t['entry'])} ({t['entry_ts']:%H:%M} ET bar) "
-                 f"| stop {fmt(t['stop'])} ({t['risk']:.1f} pts) | target {fmt(t['target'])} ({t['r']:g}R) "
-                 f"| {' | '.join(parts)} | data delayed")
+                 f"| stop {fmt(t['stop'])} ({t['risk']:.1f} pts) | "
+                 + (f"target {fmt(t['target'])} ({t['r']:g}R) " if t['target'] is not None else "exit: back inside range/VWAP at a 30-min check, or 15:55 ")
+                 + f"| {' | '.join(parts)} | data delayed")
             st["posted"].append(key_in)
         if t["status"] == "closed" and key_out not in st["posted"]:
             parts = []
@@ -285,7 +340,7 @@ def main():
     st = load_state(today)
     if not st["greeted"] and not a.once:
         post(f"Paper bot online for {today:%a %b %d}. Daily bias: {'long only' if bias == 1 else 'short only' if bias == -1 else 'none'} "
-             f"(ORB 15m only trades with it). Accounts: 25K risks ~$200/trade, 50K ~$400/trade, max 3 micros, "
+             f"(ORB 15m only trades with it). Accounts: 25K risks up to $300/trade, 50K up to $500/trade, max 3 micros, "
              f"done for the day after a loss. Data is delayed about 10 minutes.")
         st["greeted"] = True
     while True:
