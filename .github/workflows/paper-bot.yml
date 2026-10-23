@@ -1,16 +1,16 @@
 name: Paper trading bot
 
 # Watches NQ every minute during the session and posts paper entries/exits to
-# Discord. GitHub jobs are capped at a few hours, so the day is split into a
-# morning run (8:25am-12:20pm ET) and an afternoon run (12:20pm-4:10pm ET).
-# Each cron is listed for both EDT and EST; the script exits if it starts
-# outside its window. Trades are logged to paper/trades.csv.
+# Discord. Trades are logged to paper/trades.csv.
+#
+# GitHub's scheduler often starts jobs late or skips them, so the schedule fires
+# every 10 minutes from 12:00 to 20:59 UTC on weekdays (covers 8:00am-4:10pm ET
+# in both EDT and EST). The concurrency group keeps only one bot running; extra
+# triggers wait or are dropped, and a bot that starts outside the session exits
+# right away. Each run pulls the latest state first, so nothing is posted twice.
 on:
   schedule:
-    - cron: "25 12 * * 1-5"   # 8:25 EDT (7:25 EST -> exits, 13:25 covers it)
-    - cron: "25 13 * * 1-5"   # 8:25 EST
-    - cron: "20 16 * * 1-5"   # 12:20 EDT
-    - cron: "20 17 * * 1-5"   # 12:20 EST
+    - cron: "*/10 12-20 * * 1-5"
   workflow_dispatch:
     inputs:
       once:
@@ -28,7 +28,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 250
+    timeout-minutes: 270
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,11 +41,14 @@ jobs:
         run: |
           git config user.name "paper-bot"
           git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          git pull -q --rebase origin main || true
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.once }}" = "true" ]; then
             python paper/bot.py --once
-          else
-            H=$(TZ=America/New_York date +%H%M)
-            if [ "$H" -lt 815 ]; then echo "Too early ($H ET)"; exit 0; fi
-            if [ "$H" -lt 1215 ]; then python paper/bot.py --until 1220
-            else python paper/bot.py --until 1610; fi
+            exit 0
           fi
+          H=$(TZ=America/New_York date +%H%M)
+          D=$(TZ=America/New_York date +%u)
+          if [ "$D" -gt 5 ] || [ "$H" -lt 815 ] || [ "$H" -ge 1610 ]; then echo "Outside session ($H ET)"; exit 0; fi
+          # Run to the session end, in chunks that fit GitHub's time limit.
+          if [ "$H" -lt 1200 ]; then python paper/bot.py --until 1200
+          else python paper/bot.py --until 1610; fi
