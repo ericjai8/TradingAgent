@@ -43,6 +43,7 @@ import requests
 import yfinance as yf
 
 import noise
+import accounts
 
 ET = ZoneInfo("America/New_York")
 TICK = 0.25
@@ -233,6 +234,43 @@ def size(acct, stop_pts):
     return int(min(a["max_micros"], a["budget"] // (stop_pts * PTV + FEES)))
 
 
+def worst_usd(t, bars, n):
+    """Worst open-trade P&L in dollars (intraday low point of the trade)."""
+    if bars is None or n == 0:
+        return 0.0
+    end = t.get("exit_ts") or bars.index[-1]
+    seg = bars[(bars.index >= t["entry_ts"]) & (bars.index <= end)]
+    if not len(seg):
+        return 0.0
+    adv = (seg.low.min() - t["entry"]) if t["d"] == 1 else (t["entry"] - seg.high.max())
+    if t["status"] == "closed":
+        adv = min(adv, (t["exit"] - t["entry"]) * t["d"])
+    return round(min(adv, 0.0) * PTV * n - FEES * n, 2)
+
+
+def day_numbers(log, date):
+    """Day P&L and worst intraday equity per account from the trade log."""
+    t = log[(log.date == date) & (log.R.astype(str) != "")].sort_values("entry_time")
+    pnl, worst = {}, {}
+    for a in ACCOUNTS:
+        usd = pd.to_numeric(t.get(f"usd_{a}", 0), errors="coerce").fillna(0)
+        wk = pd.to_numeric(t.get(f"worst_{a}", 0), errors="coerce").fillna(0)
+        pnl[a] = float(usd.sum())
+        w = 0.0
+        for k in range(len(t)):
+            prior = usd[(t.exit_time < t.entry_time.iloc[k]).values].sum()
+            w = min(w, prior + wk.iloc[k])
+        worst[a] = min(w, pnl[a], 0.0)
+    return pnl, worst
+
+
+def book(db, date, log=None):
+    if log is None:
+        log = pd.read_csv(LOG) if os.path.exists(LOG) else pd.DataFrame(columns=["date", "R"])
+    pnl, worst = day_numbers(log, date) if len(log) else ({}, {})
+    return accounts.book_day(db, date, pnl, worst)
+
+
 def fmt(x):
     return f"{x:,.2f}"
 
@@ -270,6 +308,7 @@ def step(today, bias, st):
     closed = df[[ts + timedelta(minutes=5) <= now_et for ts in df.index]]
     last_bar = closed.index[-1] if len(closed) else None
     trades = [play(closed, s) for s in signals(closed, bias, today)]
+    closed1 = None
     try:
         df1 = get_1m()
         st["bars_1m"] = 0 if df1 is None else len(df1)
@@ -284,6 +323,9 @@ def step(today, bias, st):
     trades = [t for t in trades if t["status"] in ("open", "closed")]
     trades.sort(key=lambda t: t["entry_ts"])
     done_at = {a: None for a in ACCOUNTS}          # time of the first losing exit per account
+    db = accounts.load()
+    live_acct = str(today) >= db["start"]
+    exits = {a: [] for a in ACCOUNTS}               # (exit time, $) of today's sized trades
     rows = []
     for t in trades:
         side = "LONG" if t["d"] == 1 else "SHORT"
@@ -295,8 +337,21 @@ def step(today, bias, st):
             elif done_at[a] is not None and t["entry_ts"] >= done_at[a]:
                 acct[a] = (0, "skip, done for the day after a loss")
             else:
-                n = size(a, t["risk"])
-                acct[a] = (n, "skip, stop too wide for the risk budget" if n == 0 else "")
+                n = size(a, t["risk"]); why = "skip, stop too wide for the risk budget" if n == 0 else ""
+                if live_acct and n > 0:
+                    s_ = db["accounts"][a]; f = accounts.FLEX[a]
+                    realized = sum(u for x, u in exits[a] if x <= t["entry_ts"])
+                    room = accounts.cushion(a, s_) + realized
+                    per = t["risk"] * PTV + FEES
+                    if s_["stage"] == "live":
+                        n, why = 0, "account finished (moved to live)"
+                    elif realized <= -f["dll"]:
+                        n, why = 0, "skip, daily loss limit reached"
+                    elif n * per >= room:
+                        n = max(1, int((room - 1) // per))   # size down near the floor, min 1 micro
+                acct[a] = (n, why)
+                if n > 0 and pts is not None:
+                    exits[a].append((t["exit_ts"], pts * PTV * n - FEES * n))
                 if n > 0 and pts is not None and pts * PTV * n - FEES * n < 0:
                     done_at[a] = t["exit_ts"] if done_at[a] is None else min(done_at[a], t["exit_ts"])
         key_in = f"{t['strat']}|{t['sig_ts']}|in"
@@ -322,9 +377,11 @@ def step(today, bias, st):
                    exit_time=str(t.get("exit_ts", "")), exit=t.get("exit", ""), result=t.get("how", "open"),
                    R=round(pts / t["risk"], 3) if pts is not None else "",
                    usd_3_micros=round(money(pts), 2) if pts is not None else "")
+        bars = closed1 if t["strat"] == "Noise area" else closed
         for a, (n, why) in acct.items():
             row[f"micros_{a}"] = n
             row[f"usd_{a}"] = round(pts * PTV * n - FEES * n, 2) if (pts is not None and n) else (0 if pts is not None else "")
+            row[f"worst_{a}"] = worst_usd(t, bars, n)
         rows.append(row)
     st["last_bar"] = str(last_bar)
     return st, rows
@@ -347,10 +404,23 @@ def main():
     except Exception as e:
         print("bias error", e); bias = 0
     st = load_state(today)
+    if not a.once:
+        db = accounts.load()
+        d0 = datetime.fromisoformat(db["start"]).date()
+        k = d0
+        while k < today:                               # book any session we missed
+            if k.weekday() < 5:
+                for line in book(db, str(k)):
+                    post(line)
+            k += timedelta(days=1)
+        accounts.save(db)
     if not st["greeted"] and not a.once:
+        db = accounts.load()
         post(f"Paper bot online for {today:%a %b %d}. Daily bias: {'long only' if bias == 1 else 'short only' if bias == -1 else 'none'} "
-             f"(ORB 15m only trades with it). Accounts: 25K risks up to $300/trade, 50K up to $500/trade, max 3 micros, "
-             f"done for the day after a loss. Data is delayed about 10 minutes.")
+             f"(ORB 15m only trades with it). Risk: 25K up to $300/trade, 50K up to $500/trade, max 3 micros, "
+             f"done for the day after a loss. Data is delayed about 10 minutes.\n"
+             + ("Simulated Lucid Flex accounts (50% consistency):\n" + "\n".join(accounts.status_lines(db))
+                if str(today) >= db["start"] else f"Simulated Lucid Flex accounts start {db['start']}."))
         st["greeted"] = True
     while True:
         try:
@@ -375,6 +445,14 @@ def main():
                 post(f"Paper day summary {today:%a %b %d}: no trades today.")
         except Exception as e:
             post(f"Paper day summary {today:%a %b %d}: no trades logged.")
+        try:
+            db = accounts.load()
+            if str(today) >= db["start"]:
+                lines = book(db, str(today))
+                accounts.save(db)
+                post("\n".join(lines + ["Account status after today:"] + accounts.status_lines(db)))
+        except Exception as e:
+            print("account booking failed", repr(e))
         st["summary"] = True
         save_and_commit(st, [])
 
