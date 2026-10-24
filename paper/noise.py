@@ -38,7 +38,7 @@ def _prep(df, lookback=14):
     return d, opens, pclose, sigma
 
 
-def day_trades(df, day, stop_mult=1.0, max_trades=2, stop_after_loss=True):
+def day_trades(df, day, stop_mult=1.0, max_trades=2, stop_after_loss=True, tgt_r=1.5, range_exit=False):
     """Trades for one session `day` (datetime.date) using only bars in df.
     Returns a list of dicts in the bot's trade format; an unfinished trade has
     status 'open'."""
@@ -56,7 +56,8 @@ def day_trades(df, day, stop_mult=1.0, max_trades=2, stop_after_loss=True):
     entry = stop = risk = None; ent_i = sig_i = None
 
     def rec(status, x=None, xi=None, how=None):
-        return dict(strat="Noise area", sig_ts=t[sig_i], d=pos, stop=stop, r=None, target=None,
+        return dict(strat="Noise area", sig_ts=t[sig_i], d=pos, stop=stop, r=tgt_r,
+                    target=(entry + pos * tgt_r * risk) if tgt_r else None,
                     status=status, entry_ts=t[ent_i], entry=entry, risk=risk,
                     exit_ts=(t[xi] if xi is not None else None), exit=x, how=how)
 
@@ -68,13 +69,19 @@ def day_trades(df, day, stop_mult=1.0, max_trades=2, stop_after_loss=True):
                 out.append(rec("closed", fill - pos * TICK, i, "stopped out"))
                 lost = True; pos = 0; i += 1
                 continue
+            if tgt_r:
+                tg = entry + pos * tgt_r * risk
+                if (pos == 1 and h[i] >= tg + TICK) or (pos == -1 and l[i] <= tg - TICK):
+                    out.append(rec("closed", tg, i, "target hit"))
+                    pos = 0; i += 1
+                    continue
             if m >= 385:
                 x = o[i] - pos * TICK
                 out.append(rec("closed", x, i, "time exit 15:55"))
                 lost = lost or (x - entry) * pos < 0
                 pos = 0
                 break
-            if m in DEC and i + 1 < N:
+            if range_exit and m in DEC and i + 1 < N:
                 sg = sg_row.get(m, np.nan)
                 ub, lb = up_ref * (1 + sg), dn_ref * (1 - sg)
                 if (pos == 1 and c[i] < max(ub, vw[i])) or (pos == -1 and c[i] > min(lb, vw[i])):

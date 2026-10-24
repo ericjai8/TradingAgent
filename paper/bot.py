@@ -16,12 +16,13 @@ Strategies (same rules as the backtests):
        so it is labeled experimental. Target 1.5R, flat by 9:25 ET.
   ORB  15-min opening range breakout with daily bias: range = 9:30-9:45. First
        5m close outside it before 11:30 ET, only if it agrees with the daily bias
-       (prior day close vs 21-day EMA). Stop 1 tick beyond the opposite side.
-       Target 2R.
+       (prior day close vs 21-day EMA) AND the day's trend (signal close beyond the
+       prior session close and the 100-bar 5m EMA). Stop 1 tick beyond the
+       opposite side. Target 1.5R.
   NOISE Noise-area momentum on 1m bars (paper/noise.py): every 30 min from 10:00
        to 15:30, trade a close outside the day's normal range (14-day average
-       move at that minute); exit back inside the range/VWAP at a 30-min check,
-       hard stop = one normal move, max 2/day, flat 15:55.
+       move at that minute); hard stop = one normal move, target 1.5R,
+       max 2/day, no new entry after a loss, flat 15:55.
   Fills: entry at next bar open + 1 tick, stop checked from the entry bar on,
   stop wins ties, target must trade 1 tick through, flat at 15:55 ET.
 
@@ -160,18 +161,22 @@ def signals(df, bias, today):
             else:          # stop 75% of the candle back from its close, 2R
                 stop = b.close - d * 0.75 * rng - d * TICK
                 out.append(dict(strat=name, sig_ts=ts, d=d, stop=stop, r=2.0, flat=1555))
-    # 15-min ORB with daily bias, stop opposite side
+    # 15-min ORB with daily bias + day-trend filter, stop opposite side, 1.5R
     rng_bars = day[[930 <= hm(ts) < 945 for ts in day.index]]
     day = day[[hm(ts) >= 930 for ts in day.index]]
-    if len(rng_bars) == 3 and bias != 0:
+    ema100 = df.close.ewm(span=100, adjust=False).mean()
+    prev = df[[ts.date() < today and 930 <= hm(ts) < 1600 for ts in df.index]]
+    pdc = prev.close.iloc[-1] if len(prev) else None
+    if len(rng_bars) == 3 and bias != 0 and pdc is not None:
         hi, lo = rng_bars.high.max(), rng_bars.low.min()
         for ts, b in day[[945 <= hm(ts) < 1130 for ts in day.index]].iterrows():
             d = 1 if b.close > hi else -1 if b.close < lo else 0
             if d == 0:
                 continue
-            if d == bias:
+            with_trend = d * (b.close - pdc) > 0 and d * (b.close - ema100.loc[ts]) > 0
+            if d == bias and with_trend:
                 stop = (lo if d == 1 else hi) - d * TICK
-                out.append(dict(strat="ORB 15m", sig_ts=ts, d=d, stop=stop, r=2.0, flat=1555))
+                out.append(dict(strat="ORB 15m", sig_ts=ts, d=d, stop=stop, r=1.5, flat=1555))
             break
     return out
 
