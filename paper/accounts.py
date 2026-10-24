@@ -1,6 +1,7 @@
 """Simulated Lucid Flex accounts for the paper bot (25K and 50K, 50% consistency).
 
-Eval rules (Flex, as researched Oct 2026):
+Eval rules (Flex, as researched Oct 2026). Prices from Eric's checkout with the
+50% consistency add-on and a 30% coupon: 25K $50.40 (reset $50), 50K $90.30 (reset $90).
   25K: target $1,250, max loss $1,000 trailing the highest END-OF-DAY balance,
        daily loss limit $600 (soft: ends the day), up to 20 micros
   50K: target $3,000, max loss $2,000 EOD trailing, daily loss limit $1,200
@@ -17,8 +18,8 @@ import json
 import os
 
 FLEX = {
-    "25K": dict(target=1250, mll=1000, dll=600, cons=0.50, fee=39, reset=45, minday=100, cap=1000),
-    "50K": dict(target=3000, mll=2000, dll=1200, cons=0.50, fee=69, reset=80, minday=150, cap=2000),
+    "25K": dict(target=1250, mll=1000, dll=600, cons=0.50, fee=50.40, reset=50, minday=100, cap=1000),
+    "50K": dict(target=3000, mll=2000, dll=1200, cons=0.50, fee=90.30, reset=90, minday=150, cap=2000),
 }
 START = "2026-10-26"
 PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accounts.json")
