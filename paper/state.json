@@ -5,7 +5,7 @@
   "KZ 9:30|2026-10-29 09:30:00-04:00|out"
  ],
  "greeted": true,
- "summary": false,
+ "summary": true,
  "bars_1m": 26895,
  "sessions_1m": 20,
  "last_bar": "2026-10-29 16:00:00-04:00"
