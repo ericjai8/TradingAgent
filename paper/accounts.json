@@ -4,7 +4,8 @@
   "2026-10-26",
   "2026-10-27",
   "2026-10-28",
-  "2026-10-29"
+  "2026-10-29",
+  "2026-10-30"
  ],
  "history": [
   {
@@ -70,16 +71,32 @@
    "attempt": 1,
    "pnl": -300.75,
    "event": ""
+  },
+  {
+   "date": "2026-10-30",
+   "acct": "25K",
+   "stage": "eval",
+   "attempt": 1,
+   "pnl": -189.75,
+   "event": ""
+  },
+  {
+   "date": "2026-10-30",
+   "acct": "50K",
+   "stage": "eval",
+   "attempt": 1,
+   "pnl": -379.5,
+   "event": ""
   }
  ],
  "accounts": {
   "25K": {
    "stage": "eval",
    "attempt": 1,
-   "balance": -72.15,
+   "balance": -261.9,
    "peak_eod": 0.0,
    "best_day": 175.0,
-   "days": 2,
+   "days": 3,
    "profit_days": 0,
    "payouts": 0,
    "locked": false,
@@ -89,10 +106,10 @@
   "50K": {
    "stage": "eval",
    "attempt": 1,
-   "balance": -953.55,
+   "balance": -1333.05,
    "peak_eod": 0.0,
    "best_day": 175.0,
-   "days": 4,
+   "days": 5,
    "profit_days": 0,
    "payouts": 0,
    "locked": false,
