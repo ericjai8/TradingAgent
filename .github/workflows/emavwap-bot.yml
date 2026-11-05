@@ -1,0 +1,53 @@
+name: EMA x VWAP paper bot
+
+# Separate from the "Paper trading bot". Watches NQ around the clock during CME
+# hours (Sun 6pm ET - Fri 5pm ET), replays the 9 EMA x VWAP strategy
+# (strategy/emavwap.py) on delayed 5m bars and posts entries, targets,
+# warnings and exits to Discord. Paper only.
+#
+# Each run loops for ~5h40m. The schedule fires every 15 minutes; the
+# concurrency group keeps exactly one bot running and queues the next, so
+# coverage is continuous. Outside CME hours a run exits right away.
+#
+# Discord: add a repo secret DISCORD_WEBHOOK_EMAVWAP for its own channel.
+# Without it, messages go to DISCORD_WEBHOOK tagged [EMA×VWAP].
+on:
+  schedule:
+    - cron: "*/15 * * * 0-5"
+  workflow_dispatch:
+    inputs:
+      once:
+        description: "Run a single pass and exit (test)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: emavwap-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "yfinance>=0.2.40" pandas numpy requests
+      - name: Run bot
+        env:
+          DISCORD_WEBHOOK_EMAVWAP: ${{ secrets.DISCORD_WEBHOOK_EMAVWAP }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          git config user.name "emavwap-bot"
+          git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          git pull -q --rebase origin main || true
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.once }}" = "true" ]; then
+            python paper/emavwap_bot.py --once
+          else
+            python paper/emavwap_bot.py --minutes 340
+          fi
